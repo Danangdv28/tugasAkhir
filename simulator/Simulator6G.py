@@ -224,7 +224,7 @@ class Vulnerable6GChannelSimulator:
         
         # TOTAL PATH LOSS
         total_pl = (fspl + atm_loss + rain_loss + fog_loss + 
-                   env_loss + beam_loss + small_scale_fading)
+                    env_loss + beam_loss + small_scale_fading)
         
         return total_pl, {
             'fspl': fspl,
@@ -444,10 +444,10 @@ def main_vulnerability_analysis():
     for i, event in enumerate(weather, 1):
         if event['type'] == 'rain':
             print(f"  {i}. 🌧️  Rain: {event['start'].strftime('%H:%M')} "
-                  f"({event['duration_minutes']}min) - {event['intensity']:.1f} mm/h")
+                    f"({event['duration_minutes']}min) - {event['intensity']:.1f} mm/h")
         else:
             print(f"  {i}. 🌫️  Fog:  {event['start'].strftime('%H:%M')} "
-                  f"({event['duration_minutes']}min) - {event['intensity']:.0f}m visibility")
+                    f"({event['duration_minutes']}min) - {event['intensity']:.0f}m visibility")
     
     # CREATE TWO SIMULATORS
     print("\n📡 INITIALIZING SIMULATORS...")
