@@ -14,6 +14,9 @@ class TerahertzChannelSimulator:
         self.frequency = frequency
         freq_ghz = frequency / 1e9
         
+        self.environment_mode = "lab"   # change to "urban_stress" when needed
+        # self.environment_mode = "urban_stress"   # change to "urban_stress" when needed
+        
         # --- FREQUENCY-DEPENDENT HARDWARE (ITU-R P.1817-1) ---
         # Tx power lebih rendah di THz karena keterbatasan PA
         if freq_ghz <= 150:
@@ -36,9 +39,9 @@ class TerahertzChannelSimulator:
         # Noise figure sangat tinggi di THz (ITU-R P.1817-1)
         # NF ≈ 10-15 dB untuk D-band, 15-20 dB untuk G-band
         if freq_ghz <= 150:
-            self.rx_noise_figure = random.uniform(10, 13)
+            self.rx_noise_figure = 12.0
         else:
-            self.rx_noise_figure = random.uniform(15, 18)
+            self.rx_noise_figure = 16.5
         
         # Bandwidth lebih besar di THz
         self.bandwidth = 2e9 if freq_ghz > 200 else 1e9  # 1-2 GHz
@@ -63,7 +66,7 @@ class TerahertzChannelSimulator:
         self.distance = np.sqrt(self.user_x**2 + self.user_y**2)
         
         # Slow movement in lab (quasi-static)
-        self.velocity = random.uniform(0.1, 0.5)  # m/s (very slow movement)
+        self.velocity = random.uniform(0.05, 0.2)  # m/s (very slow movement)
         self.direction = random.uniform(0, 2*np.pi)
         
         # --- FREQUENCY-DEPENDENT ENVIRONMENT (LAB) ---
@@ -81,6 +84,9 @@ class TerahertzChannelSimulator:
         self.is_blocked = False
         self.blockage_timer = 0
         self.blockage_transition_prob = 0.001  # 0.1% (extremely rare in lab)
+        if self.environment_mode == "urban_stress":
+            self.blockage_transition_prob = 0.03  # 1%
+        
         self.blockage_exit_prob = 0.5  # 50% quick recovery
         
         # --- ATMOSPHERIC & ENVIRONMENTAL (LAB CONTROLLED) ---
@@ -92,7 +98,7 @@ class TerahertzChannelSimulator:
         
         # --- LAB ENVIRONMENT (Minimal Fading) ---
         # Controlled indoor environment with stable channel
-        self.lab_mode = True  # Lab environment flag
+        self.lab_mode = (self.environment_mode == "lab")  # Lab environment flag
         self.multipath_components = 1  # Minimal multipath in lab
         
         # --- USERS & TRAFFIC ---
@@ -102,8 +108,7 @@ class TerahertzChannelSimulator:
         # --- ENVIRONMENT MODE ---
         # "lab" = baseline
         # "urban_stress" = Bandung-like humidity + rain + objects
-        self.environment_mode = "lab"   # change to "urban_stress" when needed
-        # self.environment_mode = "urban_stress"   # change to "urban_stress" when needed
+
         
         # --- OBJECT-BASED OBSTRUCTIONS (URBAN / LAB EMULATION) ---
         self.obstacles = [
@@ -151,6 +156,19 @@ class TerahertzChannelSimulator:
         gamma_rain = k * (rain_rate ** alpha)
         
         return gamma_rain
+    
+    def atmospheric_loss_p676_ref(self):
+        """
+        Simplified ITU-R P.676 reference (order-accurate)
+        """
+        f = self.frequency / 1e9
+        rho = self.water_vapor_density
+
+        gamma_o = 0.02 * (f / 60)**2     # oxygen
+        gamma_w = 0.01 * rho * (f / 100)**2  # water vapor
+
+        return (gamma_o + gamma_w) * (self.distance / 1000)
+
     
     def get_atmospheric_attenuation_itu(self):
         """
@@ -230,6 +248,20 @@ class TerahertzChannelSimulator:
             if random.random() < obj['prob']:
                 return False, obj['loss'], obj['type']
         return True, 0, None
+    
+    def path_loss_itu_p1238(self):
+        """
+        ITU-R P.1238-12 Indoor Path Loss (Office / Lab LOS)
+        L = 20log10(f) + N log10(d) + Lf(n) - 28
+        """
+        f_ghz = self.frequency / 1e9
+        d = self.distance
+
+        N = 18  # Office / Lab LOS (P.1238 table)
+        Lf = 0  # Same floor lab
+
+        return 20*np.log10(f_ghz) + N*np.log10(d) + Lf - 28
+
 
     
     def calculate_path_loss_comprehensive(self, timestamp, is_raining, rain_rate):
@@ -242,8 +274,20 @@ class TerahertzChannelSimulator:
         
         # 2. ATMOSPHERIC GASEOUS ABSORPTION (ITU-R P.676-13)
         # Lab indoor: reduced atmospheric effects
-        atm_loss_db_km = self.get_atmospheric_attenuation_itu() * 0.5  # 50% reduced in lab
+        if self.environment_mode == "lab":
+            atm_loss_db_km = self.get_atmospheric_attenuation_itu() * 0.5
+        else:
+            atm_loss_db_km = self.get_atmospheric_attenuation_itu()  # full loss
+            
         atm_loss = atm_loss_db_km * (self.distance / 1000.0)
+        
+        atm_ref = self.atmospheric_loss_p676_ref()
+        atm_dev = atm_loss - atm_ref
+
+        assert abs(atm_dev) <= 2.0, (
+            f"P.676 deviation {atm_dev:.2f} dB exceeds 2 dB limit"
+        )
+
         
         # 3. RAIN ATTENUATION (ITU-R P.838-3)
         if self.environment_mode == "urban_stress" and is_raining:
@@ -259,23 +303,29 @@ class TerahertzChannelSimulator:
         
         # 5. OBJECT-BASED LOS / NLOS (UNIFIED MODEL)
         los_status, object_loss, obstruction = self.evaluate_los_state()
-
+        
         if not los_status:
-            env_loss = object_loss
+            env_loss = object_loss + np.random.normal(1.0, 0.5)
         else:
-            stability_variation = np.random.normal(0, 0.3)
-            env_loss = max(0, stability_variation)
+            if self.environment_mode == "urban_stress":
+                env_loss = 1.5 + np.random.normal(0, 0.5)
+            else:
+                env_loss = max(0, np.random.normal(0, 0.3))
+
 
         
         # 6. BEAM MISALIGNMENT (Critical in THz but controlled in lab)
         beam_loss = 0
         if los_status:
             # Lab setup: tripod-mounted with alignment tools
-            # Much better alignment than mobile scenario
-            theta = np.abs(np.random.normal(0, 0.1))  # 0.1° std (very precise)
             
             # Use calculated beamwidth from antenna gain
             beamwidth_deg = self.beamwidth_deg
+            
+            if self.environment_mode == "urban_stress":
+                theta = np.abs(np.random.normal(0, 0.25))
+            else:
+                theta = np.abs(np.random.normal(0, 0.1))
             
             if theta < beamwidth_deg:
                 beam_loss = 12 * (theta / beamwidth_deg) ** 2
@@ -283,6 +333,8 @@ class TerahertzChannelSimulator:
                 beam_loss = 12 + 15 * np.log10(theta / beamwidth_deg)
             
             beam_loss = min(beam_loss, 20)
+            
+
         
         # 7. SMALL-SCALE FADING - REMOVED FOR LAB
         # Lab environment: quasi-static channel, minimal fading
@@ -301,7 +353,9 @@ class TerahertzChannelSimulator:
                 f"(distance={self.distance:.1f}m)"
             )
         else:
-            assert total_pl < 180
+            assert total_pl < fspl + 40, (
+                f"Urban path loss too large: {total_pl:.1f} dB"
+            )
 
         
         return total_pl, {
@@ -378,6 +432,18 @@ class TerahertzChannelSimulator:
         rssi = 10 * np.log10(
             10 ** (rsrp / 10) + 10 ** (interference / 10) + 10 ** (noise_power / 10)
         )
+        
+        # Physical Doppler (not directly observable in lab)
+        doppler_physical = (self.velocity * np.cos(self.direction)) / self.c * self.frequency
+
+        # Effective Doppler after carrier & beam tracking (lab condition)
+        doppler_effective = doppler_physical * 0.05  # 95% compensated
+
+        assert abs(doppler_effective) <= 100, (
+            f"Effective Doppler {doppler_effective:.1f} Hz exceeds lab tolerance"
+        )
+
+
         
         return {
             'timestamp': timestamp,
