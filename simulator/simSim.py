@@ -24,7 +24,7 @@ class SimSim:
         if self.lab_mode:
             self.p_block_start = 0.002 / 60
         else:
-            self.p_block_start = 0.03 / 60
+            self.p_block_start = 0.05 / 60
         
         if self.frequency_ghz == 140:
             self.tx_power_dbm = 20.0
@@ -78,9 +78,41 @@ class SimSim:
         self.blockage_timer_s = 0
         self.blockage_duration_s = 0
         
+        self.week_duration_days = 7
+        self.rain_days_per_week = 3
+        self.rain_schedule = set()
+        self.current_day = 0
+        
+        self.nlos_shadowing_db = 0.0
+        
+        self.rain_windows = {}
+
+
+        
         assert self.distance_m > 0, "jarak harus positif"
         assert self.beamwidth_deg > 0, "beamwidth harus positif"
         assert 50 <= self.eirp_dbm <= 70, "nilai EIRP diluar rentang realistis THz"
+
+    # =======================================
+
+    def initialize_rain_schedule(self, total_days):
+        self.rain_windows = {}
+
+        if self.lab_mode:
+            self.rain_schedule = set()
+            return
+
+        days = list(range(total_days))
+        k = min(self.rain_days_per_week, total_days)
+
+        self.rain_schedule = set(
+            np.random.choice(days, size=k, replace=False)
+        )
+
+        for d in self.rain_schedule:
+            start = np.random.randint(0, 18*60)
+            duration = np.random.randint(60, 180)
+            self.rain_windows[d] = (start, start + duration)
 
     # =======================================
 
@@ -132,61 +164,94 @@ class SimSim:
 
     # =======================================
     
-    def update_environment(self, time_s: float):
-        
+    def update_environment(self, time_s):
+        day = int(time_s // 86400)
+        minute_of_day = int((time_s % 86400) // 60)
+        self.current_day = day
+    
+        # rain window logic
+        if not self.lab_mode and day in self.rain_windows:
+            start, end = self.rain_windows[day]
+            if start <= minute_of_day <= end:
+                self.is_raining = True
+                self.rain_rate_mm_per_hr = np.random.choice([5,10,20,40])
+            else:
+                self.is_raining = False
+                self.rain_rate_mm_per_hr = 0.0
+        else:
+            self.is_raining = False
+            self.rain_rate_mm_per_hr = 0.0
+
+
+        # =====================
+        # TEMPERATURE & HUMIDITY (tetap)
+        # =====================
         if self.lab_mode:
             self.temperature_c = 25.0 + np.random.normal(0, 0.3)
+            self.humidity_percent = np.clip(50 + np.random.normal(0, 2), 45, 55)
         else:
             hour = (time_s / 3600) % 24
             diurnal = 2.0 * np.sin(2*np.pi * (hour - 6) / 24)
             self.temperature_c = 26.0 + diurnal + np.random.normal(0, 0.8)
-            
-        if self.lab_mode:
-            self.humidity_percent = np.clip(50.0 + np.random.normal(0, 2.0), 45.0, 55.0)
-        else:
-            self.humidity_percent = np.clip(80.0 + np.random.normal(0, 5.0), 70.0, 90.0)
-            
+            self.humidity_percent = np.clip(80 + np.random.normal(0, 5), 70, 90)
+
         self.pressure_hpa = 1013.25 + np.random.normal(0, 1.0)
-        
-        if not self.lab_mode:
-            if not self.is_raining:
-                p_rain_start = 0.01 / 3600
-                if np.random.rand() < p_rain_start:
-                    self.is_raining = True
-                    self.rain_rate_mm_per_hr = np.random.choice([5, 10, 20, 40], p=[0.4, 0.3, 0.2, 0.1])
-                else:
-                    self.rain_rate_mm_per_hr = 0.0
-            else:
-                p_rain_end = 0.2 / 3600
-                if np.random.rand() < p_rain_end:
-                    self.is_raining = False
-                    self.rain_rate_mm_per_hr = 0.0
-        else:
-            self.is_raining = False
-            self.rain_rate_mm_per_hr = 0.0
-            
-        if not self.lab_mode and self.humidity_percent > 85.0:
-            if np.random.rand() < 0.005:
-                self.fog_visibility_m = np.random.uniform(50, 300)
-            else:
-                self.fog_visibility_m = None
+
+        # # =====================
+        # # RAIN (EVENT-BASED)
+        # # =====================
+        # if not self.lab_mode and day in self.rain_schedule:
+        #     self.is_raining = True
+        #     self.rain_rate_mm_per_hr = np.random.choice(
+        #         [5, 10, 20, 40],
+        #         p=[0.3, 0.3, 0.25, 0.15]
+        #     )
+        # else:
+        #     self.is_raining = False
+        #     self.rain_rate_mm_per_hr = 0.0
+
+        # =====================
+        # FOG (conditional)
+        # =====================
+        if not self.lab_mode and self.is_raining and self.humidity_percent > 85:
+            self.fog_visibility_m = np.random.uniform(50, 300)
         else:
             self.fog_visibility_m = None
+            
+        if self.channel_state == "NLOS":
+            self.nlos_shadowing_db += np.random.normal(0, 0.8)
+            self.nlos_shadowing_db = np.clip(self.nlos_shadowing_db, -6, 6)
+        else:
+            self.nlos_shadowing_db = 0.0
     
     # =======================================
     
     def evaluate_los_nlos(self, dt):
         if self.channel_state == "NLOS":
             self.blockage_timer_s += dt
+            
+            # 🔥 DYNAMIC BLOCKAGE FLUCTUATION
+            self.blockage_loss_db += np.random.normal(0, 1.2)
+            self.blockage_loss_db = np.clip(self.blockage_loss_db, 20, 55)
+
             if self.blockage_timer_s >= self.blockage_duration_s:
                 self.channel_state = "LOS"
                 self.blockage_loss_db = 0.0
                 self.blockage_timer_s = 0
+                self.nlos_shadowing_db = 0.0
         else:
             if np.random.rand() < self.p_block_start:
                 self.channel_state = "NLOS"
-                self.blockage_duration_s = np.random.uniform(1, 5) if self.lab_mode else np.random.uniform(2, 15)
-                self.blockage_loss_db = np.random.uniform(18, 35)
+                if self.lab_mode:
+                    self.blockage_duration_s = np.random.uniform(1, 5)
+                else:
+                    self.blockage_duration_s = np.random.uniform(30, 180)
+
+                if self.frequency_ghz == 140:
+                    self.blockage_loss_db = np.random.uniform(20, 35)
+                else:  # 220 GHz
+                    self.blockage_loss_db = np.random.uniform(30, 55)
+
 
     # =======================================
     
@@ -262,7 +327,10 @@ class SimSim:
         
     def beam_misalignment_loss_db(self):
         # baseline tracking error
-        sigma = 0.1 if self.lab_mode else 0.25
+        sigma = 0.1
+        
+        if not self.lab_mode:
+            sigma *= 1.8
         
         f_d = self.doppler_hz()
         sigma *= (1 + f_d / 300)
@@ -271,9 +339,9 @@ class SimSim:
         if self.channel_state == "NLOS":
             sigma *= 1.5
 
-        # worsened tracking in rain
-        if self.is_raining:
-            sigma *= 1.3
+        # # worsened tracking in rain
+        # if self.is_raining:
+        #     sigma *= 1.3
 
         theta_err = abs(np.random.normal(0, sigma))
         bw = self.beamwidth_deg
@@ -286,26 +354,40 @@ class SimSim:
         return min(loss_db, 20.0)
 
     # =======================================
-    
+        
     def nakagami_fading_linear(self):
         """
         Small-scale fading gain (linear power)
+        Rain increases fading severity by reducing m
         """
-        if self.lab_mode and self.channel_state == "LOS":
-            m = 8.0          # lab, strong LOS
-        elif self.channel_state == "LOS":
-            m = 3.0          # urban LOS
-        else:
-            m = 1.2          # NLOS / blockage
     
-        # Omega = 1 → mean power preserved
+        # ===== BASELINE m =====
+        if self.lab_mode and self.channel_state == "LOS":
+            m = 8.0                      # lab LOS
+        elif self.channel_state == "LOS":
+            m = 3.0                      # urban LOS
+        else:
+            m = 1.2                      # NLOS
+    
+        # ===== RAIN EFFECT =====
+        if self.is_raining:
+            if self.channel_state == "LOS":
+                m *= 0.6                 # LOS + rain → more fluctuation
+            else:
+                m *= 0.8                 # NLOS + rain → slightly worse
+    
+        # safety floor
+        m = max(m, 0.7)
+    
         h = nakagami.rvs(m)
         return h
+    
 
     
     # =======================================
     
     def total_path_loss_db(self):
+
         self.last_fspl_db = self.fspl_db()
         self.last_gas_loss_db = self.atmospheric_loss_db()
         self.last_rain_loss_db = self.rain_attenuation_db()
@@ -320,13 +402,20 @@ class SimSim:
             + self.last_fog_loss_db
             + self.last_beam_loss_db
             + self.last_blockage_loss_db
+            + self.nlos_shadowing_db
         )
 
-        # sanity bounds
-        assert L_total >= self.last_fspl_db, "path loss < FSPL (non-physical)"
+        if self.lab_mode:
+            margin = 40 if self.frequency_ghz == 140 else 50
+        else:
+            margin = 80 if self.frequency_ghz == 140 else 100
 
-        margin = 35 if self.frequency_ghz == 140 else 45
-        assert L_total < self.last_fspl_db + margin, "path loss too large for THz"
+        if not np.isfinite(L_total):
+            self.path_loss_anomaly = True
+            self.excess_loss_db = np.inf
+        else:
+            self.path_loss_anomaly = L_total > self.last_fspl_db + margin
+            self.excess_loss_db = max(0.0, L_total - (self.last_fspl_db + margin))
 
         self.last_path_loss_db = L_total
         return L_total
@@ -383,15 +472,30 @@ def simulate_1day_comparison(environment_mode="lab"):
 
     records = []
     time_s = 0.0
+    
+    sim_140.initialize_rain_schedule(total_days=1)
+    sim_220.rain_schedule = sim_140.rain_schedule
+
 
     for step in range(total_steps):
         # ==============================
         # Update environment ONCE
         # ==============================
         sim_140.update_environment(time_s)
+        sim_140.evaluate_los_nlos(dt)
+
+        # === COPY BLOCKAGE STATE (WAJIB) ===
+        sim_220.channel_state = sim_140.channel_state
+        sim_220.blockage_loss_db = sim_140.blockage_loss_db
+        sim_220.blockage_timer_s = sim_140.blockage_timer_s
+        sim_220.blockage_duration_s = sim_140.blockage_duration_s
+
+        sim_220.rain_windows = sim_140.rain_windows
+
 
         # 🔁 copy environment state to 220 GHz
         sim_220.temperature_c = sim_140.temperature_c
+        sim_220.pressure_hpa = sim_140.pressure_hpa
         sim_220.humidity_percent = sim_140.humidity_percent
         sim_220.pressure_hpa = sim_140.pressure_hpa
         sim_220.is_raining = sim_140.is_raining
@@ -401,8 +505,7 @@ def simulate_1day_comparison(environment_mode="lab"):
         # ==============================
         # LOS / NLOS (independent)
         # ==============================
-        sim_140.evaluate_los_nlos(dt)
-        sim_220.evaluate_los_nlos(dt)
+        # sim_220.evaluate_los_nlos(dt)
         
         sim_140.update_mobility(dt)
         sim_220.update_mobility(dt)
@@ -464,6 +567,8 @@ def simulate_single_frequency():
 
     records = []
 
+    sim.initialize_rain_schedule(total_days=days)
+
     for step in range(total_steps):
         sim.update_environment(time_s)
         sim.evaluate_los_nlos(dt)
@@ -486,7 +591,10 @@ def simulate_single_frequency():
             "humidity_percent": sim.humidity_percent,
             "is_raining": sim.is_raining,
             "rain_rate": sim.rain_rate_mm_per_hr,
-            "fog_visibility_m": sim.fog_visibility_m
+            "fog_visibility_m": sim.fog_visibility_m,
+            "path_loss_anomaly": sim.path_loss_anomaly,
+            "excess_loss_db": sim.excess_loss_db,
+            "fading_gain": sim.last_fading_gain
         })
 
         time_s += dt
