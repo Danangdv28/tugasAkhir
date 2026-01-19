@@ -14,8 +14,8 @@ class TerahertzChannelSimulator:
         self.frequency = frequency
         freq_ghz = frequency / 1e9
         
-        self.environment_mode = "lab"   # change to "urban_stress" when needed
-        # self.environment_mode = "urban_stress"   # change to "urban_stress" when needed
+        # self.environment_mode = "lab"   # change to "urban_stress" when needed
+        self.environment_mode = "urban_stress"   # change to "urban_stress" when needed
         
         # --- FREQUENCY-DEPENDENT HARDWARE (ITU-R P.1817-1) ---
         # Tx power lebih rendah di THz karena keterbatasan PA
@@ -218,18 +218,24 @@ class TerahertzChannelSimulator:
         self.user_y += dist_move * np.sin(self.direction)
         new_dist = np.sqrt(self.user_x ** 2 + self.user_y ** 2)
         
-        # Boundary enforcement (HARD CLAMP)
+        # Boundary enforcement with REFLECTION (bounce back)
         if new_dist > 200:
+            # Reflect direction: reverse radial component
             scale = 200 / new_dist
             self.user_x *= scale
             self.user_y *= scale
+            # Reverse direction (bounce effect)
+            self.direction = (self.direction + np.pi) % (2 * np.pi)
+            
         elif new_dist < 50:
+            # Push back to minimum distance
             scale = 50 / new_dist
             self.user_x *= scale
             self.user_y *= scale
+            # Reverse direction
+            self.direction = (self.direction + np.pi) % (2 * np.pi)
 
         self.distance = np.sqrt(self.user_x**2 + self.user_y**2)
-
         
         # Blockage update (rare in lab)
         if self.is_blocked:
