@@ -560,7 +560,9 @@ def simulate_single_frequency():
         environment_mode = "lab"
 
     sim = SimSim(freq_hz, environment_mode)
-
+    sim_140 = SimSim(140e9, environment_mode)
+    sim_220 = SimSim(220e9, environment_mode)
+    
     dt = 60
     total_steps = days * 1440
     time_s = 0.0
@@ -572,6 +574,25 @@ def simulate_single_frequency():
     for step in range(total_steps):
         sim.update_environment(time_s)
         sim.evaluate_los_nlos(dt)
+        
+                # === COPY BLOCKAGE STATE (WAJIB) ===
+        sim_220.channel_state = sim_140.channel_state
+        sim_220.blockage_loss_db = sim_140.blockage_loss_db
+        sim_220.blockage_timer_s = sim_140.blockage_timer_s
+        sim_220.blockage_duration_s = sim_140.blockage_duration_s
+
+        sim_220.rain_windows = sim_140.rain_windows
+
+
+        # 🔁 copy environment state to 220 GHz
+        sim_220.temperature_c = sim_140.temperature_c
+        sim_220.pressure_hpa = sim_140.pressure_hpa
+        sim_220.humidity_percent = sim_140.humidity_percent
+        sim_220.pressure_hpa = sim_140.pressure_hpa
+        sim_220.is_raining = sim_140.is_raining
+        sim_220.rain_rate_mm_per_hr = sim_140.rain_rate_mm_per_hr
+        sim_220.fog_visibility_m = sim_140.fog_visibility_m
+        
         sim.update_mobility(dt)
         
         snr = sim.snr_db()

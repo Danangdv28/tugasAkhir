@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-df = pd.read_csv("single_140GHz_2days_urban.csv")
+df = pd.read_csv("single_220GHz_2days_urban.csv")
 
 # =====================
 # FILTER CONDITIONS
@@ -38,5 +38,5 @@ plt.xlabel("SNR (dB)")
 plt.ylabel("CDF")
 plt.grid(True)
 plt.legend()
-plt.title("CDF of SNR – 140 GHz Urban")
+plt.title("CDF of SNR – 220 GHz Urban")
 plt.show()
