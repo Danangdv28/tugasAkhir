@@ -5,7 +5,7 @@ from sklearn.preprocessing import StandardScaler
 # =========================
 # CONFIG
 # =========================
-CSV_FILE = "single_140GHz_14days_urban_CCS.csv"
+CSV_FILE = "single_140GHz_14days_urban_CCS_FULL.csv"
 LOOKBACK = 20
 HORIZON = 1
 
