@@ -1,0 +1,17 @@
+{
+  "timestamp": "2026-01-26 18:39:27",
+  "framework": "PyTorch",
+  "model_architecture": "LSTM (64\u219232 units)",
+  "total_samples": 28,
+  "train_samples": 19,
+  "val_samples": 4,
+  "test_samples": 5,
+  "test_accuracy": 0.6,
+  "mean_confidence": 0.3687332272529602,
+  "epochs_trained": 19,
+  "final_train_loss": 0.9126954078674316,
+  "final_val_loss": 1.0975288152694702,
+  "best_val_loss": 1.0460337400436401,
+  "final_train_acc": 0.5263157894736842,
+  "final_val_acc": 0.5
+}

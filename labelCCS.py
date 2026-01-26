@@ -1,30 +1,19 @@
 import pandas as pd
 import numpy as np
 
-# =====================
-# LOAD DATA
-# =====================
-df = pd.read_csv("single_140GHz_14days_urban.csv")
+df = pd.read_csv("single_220GHz_14days_urban.csv")
 
-# =====================
-# ROLLING FEATURES
-# =====================
-WINDOW = 10  # 10 minutes
+WINDOW = 10
 
-df["snr_mean_10"] = df["snr_db"].rolling(WINDOW).mean()
-df["snr_std_10"]  = df["snr_db"].rolling(WINDOW).std()
+# rolling features
+df["snr_mean_10"] = df["snr_db"].rolling(WINDOW, min_periods=1).mean()
+df["snr_std_10"]  = df["snr_db"].rolling(WINDOW, min_periods=1).std()
 
-# =====================
-# PERCENTILE THRESHOLD
-# =====================
+# percentile from VALID rolling values
 p70 = df["snr_mean_10"].quantile(0.70)
 p30 = df["snr_mean_10"].quantile(0.30)
 
-
 def label_ccs(row):
-    if np.isnan(row["snr_mean_10"]):
-        return np.nan
-
     if row["snr_mean_10"] >= p70:
         return 0      # GOOD
     elif row["snr_mean_10"] >= p30:
@@ -32,14 +21,13 @@ def label_ccs(row):
     else:
         return 2      # SEVERE
 
-
 df["ccs"] = df.apply(label_ccs, axis=1)
 
-# =====================
-# CLEAN & SAVE
-# =====================
-df_labeled = df.dropna().reset_index(drop=True)
-df_labeled.to_csv("single_140GHz_14days_urban_CCS.csv", index=False)
+# handle NaN explicitly (BUKAN drop)
+df["fog_visibility_m"] = df["fog_visibility_m"].fillna(0)
+df = df.ffill().bfill()
 
-print("✓ CCS labeling selesai")
-print(df_labeled["ccs"].value_counts())
+df.to_csv("single_220GHz_14days_urban_CCS_FULL.csv", index=False)
+
+print("Total rows:", len(df))
+print(df["ccs"].value_counts())
