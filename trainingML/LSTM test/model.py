@@ -1,5 +1,4 @@
-# lstm_model.py
-import torch
+# model.py
 import torch.nn as nn
 
 class LSTMRegressor(nn.Module):
@@ -14,13 +13,9 @@ class LSTMRegressor(nn.Module):
             dropout=0.3
         )
 
-        self.fc = nn.Sequential(
-            nn.Linear(hidden_size, 32),
-            nn.ReLU(),
-            nn.Linear(32, 3)   # t+1, t+5, t+10
-        )
+        self.fc = nn.Linear(hidden_size, 1)
 
     def forward(self, x):
         out, _ = self.lstm(x)
-        out = out[:, -1, :]   # last timestep
-        return self.fc(out)
+        out = out[:, -1, :]
+        return self.fc(out).squeeze()

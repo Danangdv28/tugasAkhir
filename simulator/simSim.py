@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import random
 from scipy.stats import nakagami
+import os
 
 class SimSim:
     def __init__(self, frequency_hz: float, environtment_mode: str = "lab"):
@@ -459,6 +460,12 @@ class SimSim:
         return snr
 
 # =======================================
+
+def ensure_output_dir(dir_name="hasil_simulasi"):
+    os.makedirs(dir_name, exist_ok=True)
+    return dir_name
+
+# =======================================
     
 def simulate_1day_comparison(environment_mode="lab"):
     dt = 60  # 1 minute
@@ -535,10 +542,12 @@ def simulate_1day_comparison(environment_mode="lab"):
         time_s += dt
 
     df = pd.DataFrame(records)
+    output_dir = ensure_output_dir("hasil_simulasi")
     filename = f"comparison_140_vs_220_1day_{environment_mode}.csv"
-    df.to_csv(filename, index=False)
+    filepath = os.path.join(output_dir, filename)
 
-    print(f"✓ Saved: {filename}")
+    df.to_csv(filepath, index=False)
+    print(f"✓ Saved: {filepath}")
     return df
 
 
@@ -621,10 +630,13 @@ def simulate_single_frequency():
         time_s += dt
 
     df = pd.DataFrame(records)
+    output_dir = ensure_output_dir("hasil_simulasi")
     filename = f"single_{freq_ghz}GHz_{days}days_{environment_mode}.csv"
-    df.to_csv(filename, index=False)
+    filepath = os.path.join(output_dir, filename)
+    
+    df.to_csv(filepath, index=False)
+    print(f"✓ Saved: {filepath}")
 
-    print(f"✓ Saved: {filename}")
     return df
 
 if __name__ == "__main__":

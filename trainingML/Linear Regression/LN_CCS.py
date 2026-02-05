@@ -5,6 +5,12 @@ import seaborn as sns
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+import os
+
+BASE_DIR = "hasil_simulasi"
+
+RAW_FILE = os.path.join(BASE_DIR, "single_220GHz_30days_urban.csv")
+CCS_FILE = os.path.join(BASE_DIR, "single_220GHz_30days_urban_CCS_FULL.csv")
 
 # Set style untuk visualisasi
 sns.set_style("whitegrid")
@@ -13,8 +19,6 @@ plt.rcParams['figure.figsize'] = (15, 10)
 # =========================
 # CONFIG
 # =========================
-RAW_FILE = "single_140GHz_14days_urban.csv"
-CCS_FILE = "single_140GHz_14days_urban_CCS_FULL.csv"
 TARGET = "snr_db"
 SHIFT = 1
 
@@ -24,15 +28,12 @@ VAL_RATIO = 0.15
 TEST_RATIO = 0.15
 
 RAW_FEATURES = [
-    "snr_db",
     "rain_rate",
     "humidity_percent",
     "temperature_c",
     "fog_visibility_m",
     "path_loss_db"
 ]
-
-CCS_FEATURES = RAW_FEATURES + ["ccs"]
 
 # =========================
 # UTILS
@@ -86,12 +87,21 @@ print("Loading data...")
 raw_df = pd.read_csv(RAW_FILE)
 ccs_df = pd.read_csv(CCS_FILE)
 
+min_len = min(len(raw_df), len(ccs_df))
+raw_df = raw_df.iloc[:min_len].reset_index(drop=True)
+ccs_df = ccs_df.iloc[:min_len].reset_index(drop=True)
+
 # Handle missing values
 raw_df["fog_visibility_m"] = raw_df["fog_visibility_m"].fillna(0)
 ccs_df["fog_visibility_m"] = ccs_df["fog_visibility_m"].fillna(0)
 
 print(f"RAW data shape: {raw_df.shape}")
 print(f"CCS data shape: {ccs_df.shape}")
+
+ccs_df = pd.get_dummies(ccs_df, columns=["ccs"], prefix="ccs", drop_first=True)
+
+CCS_FEATURES = RAW_FEATURES + ["ccs_1", "ccs_2"]
+
 
 # =========================
 # PREPARE DATA
@@ -299,16 +309,20 @@ print("="*60)
 
 rmse_improvement = ((results['RAW']['test']['RMSE'] - results['CCS']['test']['RMSE']) / 
                     results['RAW']['test']['RMSE']) * 100
-r2_improvement = ((results['CCS']['test']['R2'] - results['RAW']['test']['R2']) / 
-                  abs(results['RAW']['test']['R2'])) * 100
+print("\nOverfitting check (RMSE):")
+print(f"RAW  Train → Val gap : {results['RAW']['val']['RMSE'] - results['RAW']['train']['RMSE']:+.3f}")
+print(f"CCS  Train → Val gap : {results['CCS']['val']['RMSE'] - results['CCS']['train']['RMSE']:+.3f}")
+
+r2_delta = results['CCS']['test']['R2'] - results['RAW']['test']['R2']
 mse_improvement = ((results['RAW']['test']['MSE'] - results['CCS']['test']['MSE']) / 
                    results['RAW']['test']['MSE']) * 100
 
 print(f"\nRMSE Reduction: {rmse_improvement:+.2f}%")
 print(f"MSE Reduction : {mse_improvement:+.2f}%")
-print(f"R² Improvement: {r2_improvement:+.2f}%")
+print(f"ΔR² (CCS - RAW): {r2_delta:+.4f}")
 
 if rmse_improvement > 0:
     print(f"\n✓ CCS model performs BETTER (lower RMSE by {rmse_improvement:.2f}%)")
 else:
     print(f"\n✗ RAW model performs BETTER (lower RMSE by {abs(rmse_improvement):.2f}%)")
+    

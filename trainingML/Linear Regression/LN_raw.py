@@ -3,14 +3,18 @@ import numpy as np
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+import os
 
-RAW_FILE = "single_140GHz_14days_urban.csv"
+BASE_DIR = "hasil_simulasi"
+RAW_FILE = "single_140GHz_30days_urban.csv"
+
+input_path = os.path.join(BASE_DIR, RAW_FILE)
+
 TARGET = "snr_db"
 SHIFT = 1
 TRAIN_RATIO = 0.7
 
 FEATURES = [
-    "snr_db",
     "rain_rate",
     "humidity_percent",
     "temperature_c",
@@ -18,7 +22,7 @@ FEATURES = [
     "path_loss_db"
 ]
 
-df = pd.read_csv(RAW_FILE)
+df = pd.read_csv(input_path)
 df["fog_visibility_m"] = df["fog_visibility_m"].fillna(0)
 
 df["target"] = df[TARGET].shift(-SHIFT)

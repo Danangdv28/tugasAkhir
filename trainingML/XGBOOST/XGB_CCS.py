@@ -1,4 +1,5 @@
 import pandas as pd
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -15,8 +16,9 @@ plt.rcParams['figure.figsize'] = (18, 12)
 # =========================
 # CONFIG
 # =========================
-RAW_FILE = "single_140GHz_14days_urban.csv"
-CCS_FILE = "single_140GHz_14days_urban_CCS_FULL.csv"
+BASE_DIR = "hasil_simulasi"
+RAW_FILE = os.path.join(BASE_DIR, "single_220GHz_30days_urban.csv")
+CCS_FILE = os.path.join(BASE_DIR, "single_220GHz_30days_urban_CCS_FULL.csv")
 TARGET = "snr_db"
 SHIFT = 1
 
@@ -26,15 +28,12 @@ VAL_RATIO = 0.15
 TEST_RATIO = 0.15
 
 RAW_FEATURES = [
-    "snr_db",
     "rain_rate",
     "humidity_percent",
     "temperature_c",
     "fog_visibility_m",
     "path_loss_db"
 ]
-
-CCS_FEATURES = RAW_FEATURES + ["ccs"]
 
 # XGBoost Hyperparameters
 XGBOOST_PARAMS = {
@@ -110,6 +109,10 @@ ccs_df["fog_visibility_m"] = ccs_df["fog_visibility_m"].fillna(0)
 print(f"RAW data shape: {raw_df.shape}")
 print(f"CCS data shape: {ccs_df.shape}")
 
+ccs_df = pd.get_dummies(ccs_df, columns=["ccs"], prefix="ccs", drop_first=True)
+CCS_FEATURES = RAW_FEATURES + ["ccs_1", "ccs_2"]
+
+
 # =========================
 # PREPARE DATA
 # =========================
@@ -126,19 +129,10 @@ print(f"\nTrain set: {Xr_train.shape[0]} samples ({TRAIN_RATIO*100}%)")
 print(f"Val set  : {Xr_val.shape[0]} samples ({VAL_RATIO*100}%)")
 print(f"Test set : {Xr_test.shape[0]} samples ({TEST_RATIO*100}%)")
 
-# Standardize data
-scaler_raw = StandardScaler()
-Xr_train_scaled = scaler_raw.fit_transform(Xr_train)
-Xr_val_scaled = scaler_raw.transform(Xr_val)
-Xr_test_scaled = scaler_raw.transform(Xr_test)
 
-scaler_ccs = StandardScaler()
-Xc_train_scaled = scaler_ccs.fit_transform(Xc_train)
-Xc_val_scaled = scaler_ccs.transform(Xc_val)
-Xc_test_scaled = scaler_ccs.transform(Xc_test)
 
 # =========================
-# TRAIN MODELS
+# TRAIN MODELS (WITH EARLY STOPPING)
 # =========================
 print("\n" + "="*60)
 print("TRAINING XGBOOST MODELS")
@@ -147,14 +141,15 @@ print("="*60)
 # Model RAW
 print("\nTraining RAW model...")
 model_raw = XGBRegressor(**XGBOOST_PARAMS)
-model_raw.fit(Xr_train_scaled, yr_train)
+model_raw.fit(Xr_train, yr_train)
 print("✓ RAW model training completed")
 
 # Model CCS
 print("\nTraining CCS model...")
 model_ccs = XGBRegressor(**XGBOOST_PARAMS)
-model_ccs.fit(Xc_train_scaled, yc_train)
+model_ccs.fit(Xc_train, yc_train)
 print("✓ CCS model training completed")
+
 
 # =========================
 # EVALUATE MODELS
@@ -165,18 +160,18 @@ results = {
 }
 
 # Predictions RAW
-yr_train_pred = model_raw.predict(Xr_train_scaled)
-yr_val_pred = model_raw.predict(Xr_val_scaled)
-yr_test_pred = model_raw.predict(Xr_test_scaled)
+yr_train_pred = model_raw.predict(Xr_train)
+yr_val_pred   = model_raw.predict(Xr_val)
+yr_test_pred  = model_raw.predict(Xr_test)
 
 results['RAW']['train'] = calculate_metrics(yr_train, yr_train_pred)
 results['RAW']['val'] = calculate_metrics(yr_val, yr_val_pred)
 results['RAW']['test'] = calculate_metrics(yr_test, yr_test_pred)
 
 # Predictions CCS
-yc_train_pred = model_ccs.predict(Xc_train_scaled)
-yc_val_pred = model_ccs.predict(Xc_val_scaled)
-yc_test_pred = model_ccs.predict(Xc_test_scaled)
+yc_train_pred = model_ccs.predict(Xc_train)
+yc_val_pred   = model_ccs.predict(Xc_val)
+yc_test_pred  = model_ccs.predict(Xc_test)
 
 results['CCS']['train'] = calculate_metrics(yc_train, yc_train_pred)
 results['CCS']['val'] = calculate_metrics(yc_val, yc_val_pred)
@@ -323,16 +318,30 @@ ax5.grid(True, alpha=0.3, axis='x')
 
 # 6. Feature Importance Comparison (CCS only)
 ax6 = fig.add_subplot(gs[1, 2])
-ccs_feature = feature_imp_ccs[feature_imp_ccs['Feature'] == 'ccs']['Importance'].values[0]
-other_features = feature_imp_ccs[feature_imp_ccs['Feature'] != 'ccs']['Importance'].sum()
-labels = ['CCS Feature', 'Other Features']
-sizes = [ccs_feature, other_features]
+
+ccs_importance = feature_imp_ccs[
+    feature_imp_ccs['Feature'].isin(['ccs_1', 'ccs_2'])
+]['Importance'].sum()
+
+other_importance = feature_imp_ccs[
+    ~feature_imp_ccs['Feature'].isin(['ccs_1', 'ccs_2'])
+]['Importance'].sum()
+
+labels = ['CCS Features', 'Other Features']
+sizes = [ccs_importance, other_importance]
 colors = ['#e74c3c', '#95a5a6']
 explode = (0.1, 0)
 
-ax6.pie(sizes, explode=explode, labels=labels, colors=colors, autopct='%1.1f%%',
-        shadow=True, startangle=90)
-ax6.set_title('CCS Feature vs Others\nImportance Distribution', fontweight='bold')
+ax6.pie(
+    sizes,
+    explode=explode,
+    labels=labels,
+    colors=colors,
+    autopct='%1.1f%%',
+    shadow=True,
+    startangle=90
+)
+ax6.set_title('CCS vs Other Features\nImportance Distribution', fontweight='bold')
 
 # 7. Prediction vs Actual - RAW (Test Set)
 ax7 = fig.add_subplot(gs[2, 0])
@@ -387,8 +396,7 @@ print("="*60)
 
 rmse_improvement = ((results['RAW']['test']['RMSE'] - results['CCS']['test']['RMSE']) / 
                     results['RAW']['test']['RMSE']) * 100
-r2_improvement = ((results['CCS']['test']['R2'] - results['RAW']['test']['R2']) / 
-                  abs(results['RAW']['test']['R2'])) * 100
+r2_delta = results['CCS']['test']['R2'] - results['RAW']['test']['R2']
 mse_improvement = ((results['RAW']['test']['MSE'] - results['CCS']['test']['MSE']) / 
                    results['RAW']['test']['MSE']) * 100
 mae_improvement = ((results['RAW']['test']['MAE'] - results['CCS']['test']['MAE']) / 
@@ -397,7 +405,7 @@ mae_improvement = ((results['RAW']['test']['MAE'] - results['CCS']['test']['MAE'
 print(f"\nMSE Reduction : {mse_improvement:+.2f}%")
 print(f"RMSE Reduction: {rmse_improvement:+.2f}%")
 print(f"MAE Reduction : {mae_improvement:+.2f}%")
-print(f"R² Improvement: {r2_improvement:+.2f}%")
+print(f"ΔR² (CCS - RAW): {r2_delta:+.4f}")
 
 if rmse_improvement > 0:
     print(f"\n✓ CCS model performs BETTER (lower RMSE by {rmse_improvement:.2f}%)")
