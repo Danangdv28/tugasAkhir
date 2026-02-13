@@ -561,8 +561,8 @@ def simulate_single_frequency():
     freq_ghz = int(freq_input)
     freq_hz = freq_ghz * 1e9
 
-    days_input = input("Durasi simulasi (1–30 hari): ").strip()
-    days = max(1, min(30, int(days_input)))
+    days_input = input("Durasi simulasi (1–60 hari): ").strip()
+    days = max(1, min(60, int(days_input)))
 
     environment_mode = input("Environment (lab / urban): ").strip()
     if environment_mode not in ["lab", "urban"]:
