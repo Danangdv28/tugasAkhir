@@ -1,16 +1,20 @@
 # =============================================================================
-# LSTMFinal.py  —  v4 (Final Strategy)
+# LSTMFinal.py  —  v4.1 (Sidang-Safe)
 # Stacked LSTM (PyTorch) — Prediksi SNR Sinyal 6G (140 GHz - Urban)
 #
-# Strategi v4:
+# Strategi v4 (tetap):
 #   [1] SNR clipping: nilai < 10 dB di-clip ke 10 dB saat training
-#       → model tidak "tersiksa" oleh outlier ekstrem 2 dB
-#       → tetap bisa deteksi kondisi channel buruk
-#   [2] LOOKBACK dikembalikan ke 30 (lebih logis untuk sinyal 6G)
-#   [3] Tambah output klasifikasi channel quality (Good/Fair/Poor/Critical)
-#   [4] Arsitektur: 3-layer Residual LSTM (256→128→64) — lebih efisien
-#   [5] Loss: MSE murni (lebih cocok setelah clipping, tanpa outlier ekstrem)
-#   [6] Evaluasi: dua metrik — ALL data & data normal saja (SNR ≥ 10 dB)
+#   [2] LOOKBACK = 30
+#   [3] Klasifikasi channel quality (Good/Fair/Poor/Critical)
+#   [4] Arsitektur: 3-layer Residual LSTM (256→128→64)
+#   [5] Loss: MSE murni
+#   [6] Evaluasi: clipped / all / normal-only
+#
+# Perbaikan v4.1 (3 fix wajib untuk sidang):
+#   [FIX 1] shuffle=False pada train_loader  ← metodologis time-series
+#   [FIX 2] Persistence Baseline             ← buktikan LSTM lebih baik
+#   [FIX 3] Classification Report lengkap    ← precision/recall/F1 per kelas
+#            + Confusion Matrix heatmap
 # =============================================================================
 
 import os
@@ -21,9 +25,14 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import seaborn as sns
 
 from sklearn.preprocessing import MinMaxScaler, LabelEncoder
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from sklearn.metrics import (
+    mean_squared_error, mean_absolute_error, r2_score,
+    classification_report, confusion_matrix,
+    precision_recall_fscore_support
+)
 
 import torch
 import torch.nn as nn
@@ -42,32 +51,31 @@ if torch.cuda.is_available():
 
 DEVICE     = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-LOOKBACK   = 30         # 30 timestep lookback (optimal untuk sinyal 6G)
+LOOKBACK   = 30
 LAG_STEPS  = 5
 BATCH_SIZE = 64
 EPOCHS     = 150
 LR         = 0.0005
 PATIENCE   = 20
 
-# ── SNR Clipping
-SNR_CLIP_MIN = 10.0     # dB — outlier < 10 dB di-clip ke 10 dB
+SNR_CLIP_MIN = 10.0
 
-# ── Channel Quality Thresholds (untuk klasifikasi kondisi)
-# Good: SNR ≥ 50 dB | Fair: 35–50 dB | Poor: 20–35 dB | Critical: < 20 dB
 CQ_THRESHOLDS = {'Good': 50, 'Fair': 35, 'Poor': 20}
 CQ_COLORS     = {'Good': 'steelblue', 'Fair': 'gold',
                  'Poor': 'orange',    'Critical': 'red'}
+CQ_ORDER      = ['Good', 'Fair', 'Poor', 'Critical']
 
 TRAIN_RATIO = 0.70
 VAL_RATIO   = 0.15
 
 print("=" * 65)
-print("  Stacked LSTM v4 — Prediksi SNR + Channel Quality 6G 140GHz")
+print("  Stacked LSTM v4.1 — Prediksi SNR + Channel Quality 6G 140GHz")
 print("=" * 65)
 print(f"  Device      : {DEVICE}")
 print(f"  Lookback    : {LOOKBACK}  |  Lag : {LAG_STEPS}")
 print(f"  SNR Clip    : nilai < {SNR_CLIP_MIN} dB → di-clip ke {SNR_CLIP_MIN} dB")
-print(f"  LR          : {LR}  |  Epochs : {EPOCHS}  |  Patience : {PATIENCE}\n")
+print(f"  LR          : {LR}  |  Epochs : {EPOCHS}  |  Patience : {PATIENCE}")
+print(f"  [FIX 1] shuffle=False  [FIX 2] Persistence Baseline  [FIX 3] Full CQ Report\n")
 
 # ─────────────────────────────────────────────
 # 1. LOAD DATA
@@ -98,7 +106,7 @@ FEATURE_COLS = [
     'channel_state'
 ]
 TARGET_COL     = 'snr_db'
-TARGET_CLIPPED = 'snr_db_clipped'   # kolom target setelah clipping
+TARGET_CLIPPED = 'snr_db_clipped'
 
 missing = [c for c in FEATURE_COLS + [TARGET_COL] if c not in df.columns]
 if missing:
@@ -123,13 +131,13 @@ for col in ['is_raining', 'path_loss_anomaly']:
 # -- Sort temporal
 df = df.sort_values(['day', 'time_min']).reset_index(drop=True)
 
-# ── [v4] SNR CLIPPING — simpan nilai asli, buat kolom clipped untuk training
+# ── SNR CLIPPING
 df[TARGET_CLIPPED] = df[TARGET_COL].clip(lower=SNR_CLIP_MIN)
 n_clipped = (df[TARGET_COL] < SNR_CLIP_MIN).sum()
 print(f"    SNR clipping   : {n_clipped} sampel ({n_clipped/len(df)*100:.2f}%) "
       f"di-clip dari < {SNR_CLIP_MIN} dB → {SNR_CLIP_MIN} dB")
 
-# ── Rolling statistics (dari SNR clipped)
+# ── Rolling statistics
 df['snr_rolling_mean_10'] = df[TARGET_CLIPPED].rolling(10, min_periods=1).mean()
 df['snr_rolling_std_10']  = df[TARGET_CLIPPED].rolling(10, min_periods=1).std().fillna(0)
 df['snr_rolling_mean_30'] = df[TARGET_CLIPPED].rolling(30, min_periods=1).mean()
@@ -140,7 +148,7 @@ rolling_cols = ['snr_rolling_mean_10', 'snr_rolling_std_10',
                 'snr_rolling_mean_30', 'snr_rolling_std_30',
                 'distance_pathloss_ratio']
 
-# ── Lag SNR (dari clipped)
+# ── Lag SNR
 lag_cols = []
 for lag in range(1, LAG_STEPS + 1):
     col = f'snr_lag_{lag}'
@@ -152,9 +160,9 @@ FEATURE_COLS_FINAL = FEATURE_COLS + rolling_cols + lag_cols
 print(f"    Total fitur    : {len(FEATURE_COLS_FINAL)}")
 print(f"    NaN tersisa    : {df[FEATURE_COLS_FINAL].isnull().sum().sum()}\n")
 
-# ── Channel Quality label (dari SNR ASLI, bukan clipped)
+# ── Channel Quality label (dari SNR ASLI)
 def get_channel_quality(snr):
-    if snr >= CQ_THRESHOLDS['Good']:  return 'Good'
+    if snr >= CQ_THRESHOLDS['Good']:   return 'Good'
     elif snr >= CQ_THRESHOLDS['Fair']: return 'Fair'
     elif snr >= CQ_THRESHOLDS['Poor']: return 'Poor'
     else:                               return 'Critical'
@@ -166,10 +174,9 @@ for cq, cnt in cq_counts.items():
     print(f"      {cq:<10}: {cnt:>7,} sampel ({cnt/len(df)*100:.2f}%)")
 print()
 
-# -- X (fitur), y (target clipped untuk training), y_orig (asli untuk evaluasi)
 X_raw    = df[FEATURE_COLS_FINAL].values.astype(np.float32)
-y_raw    = df[[TARGET_CLIPPED]].values.astype(np.float32)   # training pakai clipped
-y_orig   = df[[TARGET_COL]].values.astype(np.float32)       # evaluasi pakai asli
+y_raw    = df[[TARGET_CLIPPED]].values.astype(np.float32)
+y_orig   = df[[TARGET_COL]].values.astype(np.float32)
 cq_label = df['channel_quality'].values
 
 # ─────────────────────────────────────────────
@@ -183,7 +190,6 @@ n_test  = n - n_train - n_val
 print(f"[3] Split data  (total={n})")
 print(f"    Train : {n_train}  |  Val : {n_val}  |  Test : {n_test}\n")
 
-# Scaler fit pada CLIPPED train data
 scaler_X = MinMaxScaler(feature_range=(0, 1))
 scaler_y = MinMaxScaler(feature_range=(0, 1))
 scaler_X.fit(X_raw[:n_train])
@@ -214,11 +220,14 @@ X_seq, y_seq, y_seq_orig, cq_seq = create_sequences(
 n_train_seq = n_train - LOOKBACK
 n_val_seq   = n_val
 
-X_train, y_train = X_seq[:n_train_seq],                             y_seq[:n_train_seq]
-X_val,   y_val   = X_seq[n_train_seq:n_train_seq+n_val_seq],        y_seq[n_train_seq:n_train_seq+n_val_seq]
-X_test,  y_test  = X_seq[n_train_seq+n_val_seq:],                   y_seq[n_train_seq+n_val_seq:]
+X_train, y_train = X_seq[:n_train_seq],                          y_seq[:n_train_seq]
+X_val,   y_val   = X_seq[n_train_seq:n_train_seq+n_val_seq],     y_seq[n_train_seq:n_train_seq+n_val_seq]
+X_test,  y_test  = X_seq[n_train_seq+n_val_seq:],                y_seq[n_train_seq+n_val_seq:]
 y_test_orig      = y_seq_orig[n_train_seq+n_val_seq:]
 cq_test          = cq_seq[n_train_seq+n_val_seq:]
+
+# Simpan juga y_orig seluruh test untuk persistence baseline
+y_orig_test_full = y_orig[n_train + n_val:]   # belum di-sequence, untuk persistence
 
 print(f"[4] Shape sekuens (LOOKBACK={LOOKBACK})")
 print(f"    X_train : {X_train.shape}  X_val : {X_val.shape}  X_test : {X_test.shape}\n")
@@ -233,7 +242,8 @@ class SNRDataset(Dataset):
     def __len__(self): return len(self.X)
     def __getitem__(self, idx): return self.X[idx], self.y[idx]
 
-train_loader = DataLoader(SNRDataset(X_train, y_train), BATCH_SIZE, shuffle=True,  num_workers=0)
+# ── [FIX 1] shuffle=False — konsisten dengan prinsip time-series
+train_loader = DataLoader(SNRDataset(X_train, y_train), BATCH_SIZE, shuffle=False, num_workers=0)
 val_loader   = DataLoader(SNRDataset(X_val,   y_val),   BATCH_SIZE, shuffle=False, num_workers=0)
 test_loader  = DataLoader(SNRDataset(X_test,  y_test),  BATCH_SIZE, shuffle=False, num_workers=0)
 
@@ -290,7 +300,7 @@ class StackedLSTMv4(nn.Module):
 n_features = X_train.shape[2]
 model = StackedLSTMv4(input_size=n_features, dropout=0.25).to(DEVICE)
 
-print("[5] Arsitektur Model (v4 — 3-layer Residual LSTM):")
+print("[5] Arsitektur Model (v4.1 — 3-layer Residual LSTM):")
 print(model)
 total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f"\n    Total parameter : {total_params:,}\n")
@@ -298,7 +308,7 @@ print(f"\n    Total parameter : {total_params:,}\n")
 # ─────────────────────────────────────────────
 # 7. LOSS, OPTIMIZER, SCHEDULER
 # ─────────────────────────────────────────────
-criterion = nn.MSELoss()   # MSE murni — aman setelah clipping
+criterion = nn.MSELoss()
 optimizer = AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
 scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=8)
 
@@ -385,21 +395,20 @@ with torch.no_grad():
 y_pred_scaled = np.concatenate(preds,   axis=0)
 y_test_scaled = np.concatenate(targets, axis=0)
 
-# Inverse transform → skala clipped
 y_pred_clipped = scaler_y.inverse_transform(y_pred_scaled)
 y_test_clipped = scaler_y.inverse_transform(y_test_scaled)
 
-# Evaluasi 1: vs nilai CLIPPED (apa yang ditraining)
+# Evaluasi 1: vs CLIPPED
 rmse_c = np.sqrt(mean_squared_error(y_test_clipped, y_pred_clipped))
 mae_c  = mean_absolute_error(y_test_clipped, y_pred_clipped)
 r2_c   = r2_score(y_test_clipped, y_pred_clipped)
 
-# Evaluasi 2: vs nilai ASLI (termasuk outlier ekstrem)
+# Evaluasi 2: vs ASLI (semua)
 rmse_o = np.sqrt(mean_squared_error(y_test_orig, y_pred_clipped))
 mae_o  = mean_absolute_error(y_test_orig, y_pred_clipped)
 r2_o   = r2_score(y_test_orig, y_pred_clipped)
 
-# Evaluasi 3: hanya data normal (SNR asli ≥ 10 dB)
+# Evaluasi 3: vs ASLI (normal only, SNR ≥ 10 dB)
 mask_normal = y_test_orig.flatten() >= SNR_CLIP_MIN
 rmse_n = np.sqrt(mean_squared_error(y_test_orig[mask_normal], y_pred_clipped[mask_normal]))
 mae_n  = mean_absolute_error(y_test_orig[mask_normal], y_pred_clipped[mask_normal])
@@ -407,7 +416,7 @@ r2_n   = r2_score(y_test_orig[mask_normal], y_pred_clipped[mask_normal])
 mape_n = np.mean(np.abs((y_test_orig[mask_normal] - y_pred_clipped[mask_normal])
                          / (y_test_orig[mask_normal] + 1e-8))) * 100
 
-print("=" * 55)
+print("=" * 60)
 print("  EVALUASI vs SNR CLIPPED (training target):")
 print(f"    RMSE : {rmse_c:.4f} dB  |  MAE : {mae_c:.4f} dB  |  R² : {r2_c:.4f}")
 print()
@@ -417,9 +426,9 @@ print()
 print(f"  EVALUASI vs SNR ASLI (hanya SNR ≥ {SNR_CLIP_MIN} dB):")
 print(f"    RMSE : {rmse_n:.4f} dB  |  MAE : {mae_n:.4f} dB")
 print(f"    R²   : {r2_n:.4f}       |  MAPE: {mape_n:.2f} %")
-print("=" * 55)
+print("=" * 60)
 
-# ── Channel Quality Detection Accuracy
+# ── Channel Quality classify helper
 def classify_cq(snr_arr):
     out = []
     for v in snr_arr.flatten():
@@ -429,10 +438,10 @@ def classify_cq(snr_arr):
         else:                             out.append('Critical')
     return np.array(out)
 
-cq_actual = cq_test                          # dari SNR asli
-cq_pred   = classify_cq(y_pred_clipped)     # dari prediksi
+cq_actual = cq_test
+cq_pred   = classify_cq(y_pred_clipped)
 
-# Accuracy deteksi "Critical" (kondisi channel buruk)
+# ── Critical detection (tetap dari v4)
 mask_crit_actual = cq_actual == 'Critical'
 mask_crit_pred   = cq_pred   == 'Critical'
 if mask_crit_actual.sum() > 0:
@@ -448,13 +457,85 @@ overall_acc = (cq_actual == cq_pred).mean()
 print(f"\n  Channel Quality Accuracy (4 kelas): {overall_acc*100:.2f}%\n")
 
 # ─────────────────────────────────────────────
+# [FIX 2] PERSISTENCE BASELINE
+# ─────────────────────────────────────────────
+print("=" * 60)
+print("  [FIX 2] PERSISTENCE BASELINE COMPARISON")
+print("=" * 60)
+
+# Persistence: y_hat(t) = y(t-1)
+# Sejajarkan: buang elemen pertama aktual, buang elemen terakhir prediksi
+y_actual_t    = y_test_orig[1:].flatten()
+y_persist     = y_test_orig[:-1].flatten()
+y_lstm_align  = y_pred_clipped[1:].flatten()
+
+# Normal only mask (disejajarkan)
+mask_n_align  = y_actual_t >= SNR_CLIP_MIN
+
+# Persistence metrics — normal only
+rmse_p = np.sqrt(mean_squared_error(y_actual_t[mask_n_align], y_persist[mask_n_align]))
+mae_p  = mean_absolute_error(y_actual_t[mask_n_align], y_persist[mask_n_align])
+r2_p   = r2_score(y_actual_t[mask_n_align], y_persist[mask_n_align])
+
+# LSTM metrics — normal only (aligned, konsisten dengan persistence)
+rmse_l = np.sqrt(mean_squared_error(y_actual_t[mask_n_align], y_lstm_align[mask_n_align]))
+mae_l  = mean_absolute_error(y_actual_t[mask_n_align], y_lstm_align[mask_n_align])
+r2_l   = r2_score(y_actual_t[mask_n_align], y_lstm_align[mask_n_align])
+
+rmse_improve = (rmse_p - rmse_l) / rmse_p * 100
+mae_improve  = (mae_p  - mae_l)  / mae_p  * 100
+
+print(f"\n  {'Metrik':<12} {'Persistence':>14} {'LSTM v4.1':>14} {'Improve':>10}")
+print(f"  {'-'*54}")
+print(f"  {'RMSE (dB)':<12} {rmse_p:>14.4f} {rmse_l:>14.4f} {rmse_improve:>9.2f}%")
+print(f"  {'MAE  (dB)':<12} {mae_p:>14.4f} {mae_l:>14.4f} {mae_improve:>9.2f}%")
+print(f"  {'R²':<12} {r2_p:>14.4f} {r2_l:>14.4f} {'—':>10}")
+print(f"\n  * Evaluasi pada SNR ≥ {SNR_CLIP_MIN} dB")
+
+if rmse_improve > 20:
+    verdict = "✅ LSTM secara signifikan lebih baik dari baseline naive."
+elif rmse_improve > 5:
+    verdict = "✅ LSTM lebih baik dari baseline — improvement moderat."
+else:
+    verdict = "⚠️  LSTM hanya sedikit lebih baik. Justifikasi arsitektur perlu diperkuat."
+print(f"\n  Verdict: {verdict}")
+print("=" * 60)
+
+# ─────────────────────────────────────────────
+# [FIX 3] CLASSIFICATION REPORT LENGKAP
+# ─────────────────────────────────────────────
+print("\n" + "=" * 60)
+print("  [FIX 3] CHANNEL QUALITY CLASSIFICATION REPORT (4 Kelas)")
+print("=" * 60)
+
+report_str = classification_report(
+    cq_actual, cq_pred,
+    labels=CQ_ORDER,
+    target_names=CQ_ORDER,
+    digits=4,
+    zero_division=0
+)
+print(report_str)
+
+# Per-class detail
+prec, rec, f1, sup = precision_recall_fscore_support(
+    cq_actual, cq_pred, labels=CQ_ORDER, zero_division=0
+)
+print(f"  {'Kelas':<12} {'Precision':>10} {'Recall':>10} {'F1':>10} {'Support':>10}")
+print(f"  {'-'*52}")
+for i, cq in enumerate(CQ_ORDER):
+    print(f"  {cq:<12} {prec[i]:>10.4f} {rec[i]:>10.4f} {f1[i]:>10.4f} {sup[i]:>10}")
+print("=" * 60)
+
+# ─────────────────────────────────────────────
 # 10. VISUALISASI
 # ─────────────────────────────────────────────
-print("[8] Menyimpan plot ...\n")
+print("\n[8] Menyimpan plot ...\n")
 
+# ── Plot utama (sama persis dengan v4)
 fig = plt.figure(figsize=(20, 14))
 fig.suptitle(
-    f'Stacked LSTM v4 — SNR + Channel Quality 6G 140 GHz Urban\n'
+    f'Stacked LSTM v4.1 — SNR + Channel Quality 6G 140 GHz Urban\n'
     f'LOOKBACK={LOOKBACK} | Clip≥{SNR_CLIP_MIN}dB | MSE | AdamW '
     f'| RMSE={rmse_n:.3f}dB | R²={r2_n:.4f} (SNR≥{SNR_CLIP_MIN}dB)',
     fontsize=12, fontweight='bold'
@@ -466,21 +547,20 @@ ax3 = fig.add_subplot(3, 3, 3)
 ax4 = fig.add_subplot(3, 1, 2)
 ax5 = fig.add_subplot(3, 1, 3)
 
-# ── Loss
+# Loss
 ax1.plot(history['train_loss'], label='Train', color='steelblue')
 ax1.plot(history['val_loss'],   label='Val',   color='tomato')
 ax1.set_title('Loss (MSE)'); ax1.set_xlabel('Epoch'); ax1.set_ylabel('Loss')
 ax1.legend(); ax1.grid(True, alpha=0.3)
 
-# ── MAE
+# MAE
 ax2.plot(history['train_mae'], label='Train MAE', color='steelblue')
 ax2.plot(history['val_mae'],   label='Val MAE',   color='tomato')
 ax2.set_title('MAE Curve (scaled)'); ax2.set_xlabel('Epoch')
 ax2.legend(); ax2.grid(True, alpha=0.3)
 
-# ── Scatter (warna per channel quality)
-cq_order = ['Good', 'Fair', 'Poor', 'Critical']
-for cq in cq_order:
+# Scatter per channel quality
+for cq in CQ_ORDER:
     mask = cq_actual == cq
     if mask.sum() > 0:
         ax3.scatter(y_test_orig[mask], y_pred_clipped[mask],
@@ -494,11 +574,10 @@ ax3.set_title(f'Scatter per Channel Quality  (R²={r2_n:.4f})')
 ax3.set_xlabel('Actual SNR (dB)'); ax3.set_ylabel('Predicted SNR (dB)')
 ax3.legend(fontsize=7, loc='upper left'); ax3.grid(True, alpha=0.3)
 
-# ── Actual vs Predicted dengan background channel quality
+# Actual vs Predicted + background channel quality
 n_show = min(500, len(y_test_orig))
 x_idx  = np.arange(n_show)
 
-# Shading background per channel quality
 prev_cq, prev_i = cq_actual[0], 0
 for i in range(1, n_show + 1):
     cur_cq = cq_actual[i] if i < n_show else None
@@ -514,9 +593,8 @@ ax4.plot(x_idx, y_pred_clipped[:n_show], label='Predicted SNR',
 ax4.axhline(SNR_CLIP_MIN, color='purple', linestyle=':', lw=1,
             label=f'Clip min ({SNR_CLIP_MIN} dB)')
 
-# Legend channel quality patches
 patches = [mpatches.Patch(color=CQ_COLORS[cq], alpha=0.4, label=cq)
-           for cq in cq_order]
+           for cq in CQ_ORDER]
 handles, labels_leg = ax4.get_legend_handles_labels()
 ax4.legend(handles=handles + patches, fontsize=7,
            loc='upper right', ncol=4)
@@ -524,8 +602,8 @@ ax4.set_title(f'Actual vs Predicted SNR + Channel Quality Background ({n_show} s
 ax4.set_xlabel('Sampel'); ax4.set_ylabel('SNR (dB)')
 ax4.grid(True, alpha=0.3)
 
-# ── Channel Quality bar chart comparison
-cq_cats = ['Good', 'Fair', 'Poor', 'Critical']
+# Channel Quality bar chart
+cq_cats = CQ_ORDER
 actual_counts = [np.sum(cq_actual[:n_show] == c) for c in cq_cats]
 pred_counts   = [np.sum(cq_pred[:n_show]   == c) for c in cq_cats]
 x_bar = np.arange(len(cq_cats))
@@ -540,7 +618,59 @@ ax5.legend(); ax5.grid(True, alpha=0.3, axis='y')
 plt.tight_layout()
 PLOT_PATH = os.path.join(BASE_DIR, 'lstm_snr_results.png')
 plt.savefig(PLOT_PATH, dpi=150, bbox_inches='tight')
-print(f"    Plot disimpan : {PLOT_PATH}")
+print(f"    Plot utama disimpan : {PLOT_PATH}")
+plt.show()
+
+# ── [FIX 3 cont.] Confusion Matrix — plot terpisah
+fig_cm, axes_cm = plt.subplots(1, 2, figsize=(14, 5))
+fig_cm.suptitle('Channel Quality Classification — Confusion Matrix',
+                fontsize=13, fontweight='bold')
+
+cm_raw  = confusion_matrix(cq_actual, cq_pred, labels=CQ_ORDER)
+cm_norm = cm_raw.astype(float) / (cm_raw.sum(axis=1, keepdims=True) + 1e-8)
+
+sns.heatmap(cm_raw,  annot=True, fmt='d',    cmap='Blues',
+            xticklabels=CQ_ORDER, yticklabels=CQ_ORDER,
+            ax=axes_cm[0], linewidths=0.5)
+axes_cm[0].set_title('Confusion Matrix (Count)')
+axes_cm[0].set_xlabel('Predicted'); axes_cm[0].set_ylabel('Actual')
+
+sns.heatmap(cm_norm, annot=True, fmt='.3f',  cmap='YlOrRd',
+            xticklabels=CQ_ORDER, yticklabels=CQ_ORDER,
+            ax=axes_cm[1], linewidths=0.5, vmin=0, vmax=1)
+axes_cm[1].set_title('Confusion Matrix (Normalized — Recall per Kelas)')
+axes_cm[1].set_xlabel('Predicted'); axes_cm[1].set_ylabel('Actual')
+
+plt.tight_layout()
+CM_PATH = os.path.join(BASE_DIR, 'channel_quality_confusion_matrix.png')
+plt.savefig(CM_PATH, dpi=150, bbox_inches='tight')
+print(f"    Confusion matrix    : {CM_PATH}")
+plt.show()
+
+# ── [FIX 2 cont.] Baseline comparison bar chart
+fig_bl, ax_bl = plt.subplots(figsize=(8, 5))
+metrics_name = ['RMSE (dB)', 'MAE (dB)']
+vals_persist = [rmse_p, mae_p]
+vals_lstm    = [rmse_l, mae_l]
+x_bl = np.arange(len(metrics_name))
+w_bl = 0.3
+ax_bl.bar(x_bl - w_bl/2, vals_persist, w_bl, label='Persistence Baseline',
+          color='gray', alpha=0.8)
+ax_bl.bar(x_bl + w_bl/2, vals_lstm,    w_bl, label='LSTM v4.1',
+          color='steelblue', alpha=0.85)
+ax_bl.set_xticks(x_bl); ax_bl.set_xticklabels(metrics_name)
+ax_bl.set_title(f'LSTM vs Persistence Baseline (SNR ≥ {SNR_CLIP_MIN} dB)\n'
+                f'RMSE improve: {rmse_improve:.2f}%  |  MAE improve: {mae_improve:.2f}%')
+ax_bl.set_ylabel('Error (dB)')
+ax_bl.legend(); ax_bl.grid(True, alpha=0.3, axis='y')
+for bar in ax_bl.patches:
+    ax_bl.annotate(f'{bar.get_height():.4f}',
+                   (bar.get_x() + bar.get_width() / 2, bar.get_height()),
+                   ha='center', va='bottom', fontsize=9)
+plt.tight_layout()
+BL_PATH = os.path.join(BASE_DIR, 'baseline_comparison.png')
+plt.savefig(BL_PATH, dpi=150, bbox_inches='tight')
+print(f"    Baseline comparison : {BL_PATH}")
 plt.show()
 
 # ─────────────────────────────────────────────
@@ -554,22 +684,29 @@ torch.save({
     'lookback'        : LOOKBACK,
     'snr_clip_min'    : SNR_CLIP_MIN,
     'metrics': {
-        'rmse_clipped': rmse_c, 'r2_clipped': r2_c,
-        'rmse_normal' : rmse_n, 'mae_normal' : mae_n,
-        'r2_normal'   : r2_n,  'mape_normal': mape_n
+        'rmse_clipped'           : rmse_c,
+        'r2_clipped'             : r2_c,
+        'rmse_normal'            : rmse_n,
+        'mae_normal'             : mae_n,
+        'r2_normal'              : r2_n,
+        'mape_normal'            : mape_n,
+        'rmse_persistence_normal': rmse_p,   # [FIX 2]
+        'rmse_lstm_normal'       : rmse_l,
+        'rmse_improve_pct'       : rmse_improve,
+        'cq_overall_accuracy'    : overall_acc,
     }
 }, os.path.join(BASE_DIR, 'LSTMFinal_model.pt'))
 print(f"\n[9] Model disimpan : LSTMFinal_model.pt")
 
 result_df = pd.DataFrame({
-    'actual_snr_db'    : y_test_orig.flatten(),
-    'predicted_snr_db' : y_pred_clipped.flatten(),
-    'error_db'         : (y_test_orig - y_pred_clipped).flatten(),
-    'channel_quality_actual'   : cq_actual,
-    'channel_quality_predicted': cq_pred
+    'actual_snr_db'             : y_test_orig.flatten(),
+    'predicted_snr_db'          : y_pred_clipped.flatten(),
+    'error_db'                  : (y_test_orig - y_pred_clipped).flatten(),
+    'channel_quality_actual'    : cq_actual,
+    'channel_quality_predicted' : cq_pred
 })
 RESULT_PATH = os.path.join(BASE_DIR, 'lstm_prediction_results.csv')
 result_df.to_csv(RESULT_PATH, index=False)
 print(f"    Hasil prediksi : lstm_prediction_results.csv")
 
-print("\n✅ Selesai! (v4 — Clipping + Channel Quality)\n")
+print(f"\n✅ Selesai! (v4.1 — shuffle=False + Persistence Baseline + Full CQ Report)\n")
