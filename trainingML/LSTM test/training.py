@@ -23,13 +23,7 @@ BASE_DIR = "hasil_simulasi"
 CSV_FILE = os.path.join(BASE_DIR, "single_220GHz_30days_urban_CCS_FULL.csv")
 
 FEATURES = [
-    "rain_rate",
-    "humidity_percent",
-    "temperature_c",
-    "fog_visibility_m",
-    "path_loss_db",
-    "ccs_1",
-    "ccs_2"
+    
 ]
 
 LOOKBACK = 5
