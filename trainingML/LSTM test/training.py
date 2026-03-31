@@ -1,171 +1,305 @@
-# training.py
-import torch
+# ==========================================================
+# 1. IMPORT LIBRARY
+# ==========================================================
+
 import numpy as np
-import os
-import random
-from torch.utils.data import DataLoader, Subset
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from Dataset import SNRSequenceDataset
-from model import LSTMRegressor
+import pandas as pd
 import matplotlib.pyplot as plt
 
-# =========================
-# REPRODUCIBILITY
-# =========================
-torch.manual_seed(42)
-np.random.seed(42)
-random.seed(42)
+from sklearn.metrics import mean_squared_error, r2_score
 
-# =========================
-# CONFIG
-# =========================
-BASE_DIR = "hasil_simulasi"
-CSV_FILE = os.path.join(BASE_DIR, "single_220GHz_30days_urban_CCS_FULL.csv")
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
 
-FEATURES = [
-    
-]
 
-LOOKBACK = 5
-BATCH_SIZE = 32
-EPOCHS = 100
-LR = 1e-3
-PATIENCE = 7   # early stopping patience
+# ==========================================================
+# 2. LOAD DATASET
+# ==========================================================
 
-# =========================
-# DATASET
-# =========================
-dataset = SNRSequenceDataset(CSV_FILE, FEATURES, LOOKBACK)
+df = pd.read_csv("")
 
-N = len(dataset)
-train_end = int(0.7 * N)
-val_end   = int(0.85 * N)
+target = "snr_dB"
 
-train_set = Subset(dataset, range(0, train_end))
-val_set   = Subset(dataset, range(train_end, val_end))
-test_set  = Subset(dataset, range(val_end, N))
+X = df.drop(columns=[target]).values
+y = df[target].values
 
-train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=False)
-val_loader   = DataLoader(val_set, batch_size=BATCH_SIZE, shuffle=False)
-test_loader  = DataLoader(test_set, batch_size=BATCH_SIZE, shuffle=False)
 
-# =========================
-# MODEL
-# =========================
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model = LSTMRegressor(num_features=len(FEATURES)).to(device)
+# ==========================================================
+# 3. SEQUENCE ENGINEERING
+# ==========================================================
 
-criterion = torch.nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+def create_sequences(X, y, window):
 
-train_rmse_history = []
-val_rmse_history = []
+    X_seq = []
+    y_seq = []
 
-best_val_rmse = np.inf
-best_state = None
-patience_counter = 0
+    for i in range(len(X) - window):
 
-# =========================
-# TRAIN (WITH EARLY STOPPING)
-# =========================
-for epoch in range(EPOCHS):
-    # ===== TRAIN =====
+        X_seq.append(X[i:i+window])
+        y_seq.append(y[i+window])
+
+    return np.array(X_seq), np.array(y_seq)
+
+
+window_size = 20
+
+X_seq, y_seq = create_sequences(X, y, window_size)
+
+
+# ==========================================================
+# 4. TRAIN / VAL / TEST SPLIT
+# ==========================================================
+
+train_split = int(len(X_seq) * 0.7)
+val_split = int(len(X_seq) * 0.85)
+
+X_train = X_seq[:train_split]
+y_train = y_seq[:train_split]
+
+X_val = X_seq[train_split:val_split]
+y_val = y_seq[train_split:val_split]
+
+X_test = X_seq[val_split:]
+y_test = y_seq[val_split:]
+
+
+# ==========================================================
+# 5. DATASET CLASS
+# ==========================================================
+
+class ChannelDataset(Dataset):
+
+    def __init__(self, X, y):
+
+        self.X = torch.tensor(X, dtype=torch.float32)
+        self.y = torch.tensor(y, dtype=torch.float32)
+
+    def __len__(self):
+
+        return len(self.X)
+
+    def __getitem__(self, idx):
+
+        return self.X[idx], self.y[idx]
+
+
+train_dataset = ChannelDataset(X_train, y_train)
+val_dataset = ChannelDataset(X_val, y_val)
+test_dataset = ChannelDataset(X_test, y_test)
+
+
+# ==========================================================
+# 6. DATALOADER
+# ==========================================================
+
+batch_size = 64
+
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
+val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+
+# ==========================================================
+# 7. LSTM MODEL
+# ==========================================================
+
+class LSTMModel(nn.Module):
+
+    def __init__(self, input_size):
+
+        super().__init__()
+
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=64,
+            num_layers=2,
+            batch_first=True
+        )
+
+        self.dropout = nn.Dropout(0.2)
+
+        self.fc1 = nn.Linear(64, 16)
+        self.relu = nn.ReLU()
+
+        self.fc2 = nn.Linear(16, 1)
+
+    def forward(self, x):
+
+        out, _ = self.lstm(x)
+
+        out = out[:, -1, :]
+
+        out = self.dropout(out)
+
+        out = self.relu(self.fc1(out))
+
+        out = self.fc2(out)
+
+        return out.squeeze()
+
+
+input_size = X_train.shape[2]
+
+model = LSTMModel(input_size)
+
+
+# ==========================================================
+# 8. LOSS & OPTIMIZER
+# ==========================================================
+
+criterion = nn.HuberLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
+
+# ==========================================================
+# 9. EARLY STOPPING SETUP
+# ==========================================================
+
+patience = 7
+best_val_loss = np.inf
+counter = 0
+
+
+# ==========================================================
+# 10. TRAINING LOOP
+# ==========================================================
+
+epochs = 100
+
+train_losses = []
+val_losses = []
+
+for epoch in range(epochs):
+
+    # TRAIN
     model.train()
-    train_loss = 0.0
+    train_loss = 0
 
-    for X, y in train_loader:
-        X, y = X.to(device), y.to(device)
+    for X_batch, y_batch in train_loader:
 
         optimizer.zero_grad()
-        pred = model(X)
-        loss = criterion(pred, y)
+
+        output = model(X_batch)
+
+        loss = criterion(output, y_batch)
+
         loss.backward()
+
         optimizer.step()
 
         train_loss += loss.item()
 
-    train_rmse = np.sqrt(train_loss / len(train_loader))
-    train_rmse_history.append(train_rmse)
+    train_loss /= len(train_loader)
 
-    # ===== VALIDATION =====
+    # VALIDATION
     model.eval()
-    val_loss = 0.0
+    val_loss = 0
 
     with torch.no_grad():
-        for X, y in val_loader:
-            X, y = X.to(device), y.to(device)
-            pred = model(X)
-            val_loss += criterion(pred, y).item()
 
-    val_rmse = np.sqrt(val_loss / len(val_loader))
-    val_rmse_history.append(val_rmse)
+        for X_batch, y_batch in val_loader:
 
-    print(
-        f"Epoch {epoch+1:03d} | "
-        f"Train RMSE: {train_rmse:.4f} | "
-        f"Val RMSE: {val_rmse:.4f}"
-    )
+            output = model(X_batch)
 
-    # ===== EARLY STOPPING =====
-    if val_rmse < best_val_rmse:
-        best_val_rmse = val_rmse
-        best_state = model.state_dict()
-        patience_counter = 0
+            loss = criterion(output, y_batch)
+
+            val_loss += loss.item()
+
+    val_loss /= len(val_loader)
+
+    train_losses.append(train_loss)
+    val_losses.append(val_loss)
+
+    print(f"Epoch {epoch+1} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+
+    # EARLY STOPPING
+
+    if val_loss < best_val_loss:
+
+        best_val_loss = val_loss
+        counter = 0
+
+        torch.save(model.state_dict(), "best_lstm_model.pth")
+
     else:
-        patience_counter += 1
-        if patience_counter >= PATIENCE:
-            print(f"\n⏹ Early stopping at epoch {epoch+1}")
+
+        counter += 1
+
+        if counter >= patience:
+
+            print("Early stopping triggered")
             break
 
-# =========================
-# LOAD BEST MODEL
-# =========================
-model.load_state_dict(best_state)
+
+# ==========================================================
+# 11. LOAD BEST MODEL
+# ==========================================================
+
+model.load_state_dict(torch.load("best_lstm_model.pth"))
+
+
+# ==========================================================
+# 12. TEST PREDICTION
+# ==========================================================
+
 model.eval()
 
-# =========================
-# TEST EVALUATION (FINAL)
-# =========================
-y_true, y_pred = [], []
+predictions = []
 
 with torch.no_grad():
-    for X, y in test_loader:
-        X = X.to(device)
-        pred = model(X).cpu().numpy().ravel()
 
-        y_true.append(y.numpy().ravel())
-        y_pred.append(pred)
+    for X_batch, _ in test_loader:
 
-y_true = np.concatenate(y_true)
-y_pred = np.concatenate(y_pred)
+        output = model(X_batch)
 
-rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-mae  = mean_absolute_error(y_true, y_pred)
-r2   = r2_score(y_true, y_pred)
+        predictions.extend(output.numpy())
 
-# =========================
-# PLOT TRAINING CURVE
-# =========================
-epochs = range(1, len(train_rmse_history) + 1)
+predictions = np.array(predictions)
 
-plt.figure(figsize=(10, 6))
-plt.plot(epochs, train_rmse_history, label="Train RMSE", linewidth=2)
-plt.plot(epochs, val_rmse_history, label="Validation RMSE", linewidth=2)
 
-plt.xlabel("Epoch")
-plt.ylabel("RMSE (dB)")
-plt.title("LSTM Training vs Validation RMSE")
+# ==========================================================
+# 13. EVALUATION
+# ==========================================================
+
+mse = mean_squared_error(y_test, predictions)
+r2 = r2_score(y_test, predictions)
+
+print("\nMODEL PERFORMANCE")
+print("MSE :", mse)
+print("R2  :", r2)
+
+torch.save(model, "lstm_channel_model_full.pt")
+
+# ==========================================================
+# 14. SAVE PREDICTION PLOT
+# ==========================================================
+
+plt.figure(figsize=(12,5))
+
+plt.plot(y_test[:500], label="True SNR")
+plt.plot(predictions[:500], label="Predicted SNR")
+
 plt.legend()
-plt.grid(alpha=0.3)
-plt.tight_layout()
-plt.savefig("lstm_training_curve.png", dpi=300)
-plt.show()
+plt.title("LSTM Channel Prediction")
 
-# =========================
-# RESULTS
-# =========================
-print("\n=== LSTM RESULTS (TEST SET) ===")
-print(f"RMSE : {rmse:.4f} dB")
-print(f"MAE  : {mae:.4f} dB")
-print(f"R²   : {r2:.4f}")
-print(f"LSTM,TEST,{rmse:.4f},{mae:.4f},{r2:.4f}")
+plt.savefig("prediction_plot.png", dpi=300)
+
+plt.close()
+
+
+# ==========================================================
+# 15. SAVE TRAINING CURVE
+# ==========================================================
+
+plt.figure()
+
+plt.plot(train_losses, label="Train Loss")
+plt.plot(val_losses, label="Validation Loss")
+
+plt.legend()
+plt.title("Training Curve")
+
+plt.savefig("training_curve.png", dpi=300)
+
+plt.close()
