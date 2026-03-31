@@ -106,6 +106,7 @@ class LSTMModel(nn.Module):
         out = self.relu(self.fc1(out))
         out = self.fc2(out)
         return out.squeeze()
+    
 
 
 # ==========================================================
@@ -118,6 +119,55 @@ model.load_state_dict(checkpoint["model_state_dict"])
 
 model.eval()
 
+# ================================
+# ZERO WEATHER FEATURES
+# ================================
+X_zero = X_seq.copy()
+
+# nolkan weather (kolom 0–4)
+X_zero[:, :, 0:5] = 0
+
+X_tensor = torch.tensor(X_zero, dtype=torch.float32)
+
+zero_pred = []
+
+with torch.no_grad():
+    for i in range(0, len(X_tensor), 64):
+        batch = X_tensor[i:i+64]
+        out = model(batch)
+        zero_pred.extend(out.numpy())
+
+zero_pred = np.array(zero_pred)
+
+r2_zero = r2_score(y_seq, zero_pred)
+
+print("\nZERO WEATHER TEST")
+print("R2 no weather:", r2_zero)
+
+# ================================
+# SHUFFLE TIME TEST
+# ================================
+X_seq_shuffled = X_seq.copy()
+
+for seq in X_seq_shuffled:
+    np.random.shuffle(seq)  # acak urutan dalam window
+
+X_tensor = torch.tensor(X_seq_shuffled, dtype=torch.float32)
+
+shuffled_pred = []
+
+with torch.no_grad():
+    for i in range(0, len(X_tensor), 64):
+        batch = X_tensor[i:i+64]
+        out = model(batch)
+        shuffled_pred.extend(out.numpy())
+
+shuffled_pred = np.array(shuffled_pred)
+
+r2_shuffled = r2_score(y_seq, shuffled_pred)
+
+print("\nSHUFFLE TIME TEST")
+print("R2 shuffled:", r2_shuffled)
 
 # ==========================================================
 # 9. PREDICTION
@@ -155,3 +205,18 @@ plt.legend()
 plt.title("Generalization Test")
 
 plt.show()
+
+# ================================
+# NAIVE BASELINE
+# ================================
+naive_pred = y_seq[:-1]
+true_naive = y_seq[1:]
+
+r2_naive = r2_score(true_naive, naive_pred)
+
+print("\nNAIVE BASELINE")
+print("R2 Naive:", r2_naive)
+
+print("\nCOMPARISON")
+print("R2 LSTM :", r2)
+print("R2 Naive:", r2_naive)
