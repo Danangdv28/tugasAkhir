@@ -16,7 +16,7 @@ from torch.utils.data import Dataset, DataLoader
 # ==========================================================
 # 2. LOAD DATASET BARU
 # ==========================================================
-df = pd.read_csv("bestModeTesting/urban_140GHz.csv")  # GANTI dengan dataset test kamu
+df = pd.read_csv("testtrain/bestModeTesting/urban_140GHz.csv")  # GANTI dengan dataset test kamu
 
 # DROP timestamp
 df = df.drop(columns=["timestamp"])
@@ -45,7 +45,7 @@ y = df[target].values
 # ==========================================================
 # 4. LOAD SCALER (PENTING)
 # ==========================================================
-scaler = joblib.load("scaler_220GHz.save")
+scaler = joblib.load("testtrain/scaler_140GHz.save")
 
 X_scaled = scaler.transform(X)  # ❌ JANGAN FIT ULANG
 
@@ -111,7 +111,7 @@ class LSTMModel(nn.Module):
 # ==========================================================
 # 8. LOAD MODEL
 # ==========================================================
-checkpoint = torch.load("lstm_model_140GHz.pth")
+checkpoint = torch.load("testtrain/lstm_model_140GHz.pth")
 
 model = LSTMModel(input_size=checkpoint["input_size"])
 model.load_state_dict(checkpoint["model_state_dict"])

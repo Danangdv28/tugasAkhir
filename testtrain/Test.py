@@ -17,7 +17,7 @@ import joblib
 # ==========================================================
 # 2. LOAD DATASET
 # ==========================================================
-df = pd.read_csv("urban_220GHz.csv")  # ganti 220 jika mau
+df = pd.read_csv("testtrain/urban_140GHz.csv")  # ganti 220 jika mau
 
 # ==========================================================
 # 3. PREPROCESSING
@@ -109,7 +109,7 @@ test_loader  = DataLoader(ChannelDataset(X_test, y_test), batch_size=64, shuffle
 
 # Scaler
 
-joblib.dump(scaler, "scaler_220GHz.save")
+joblib.dump(scaler, "scaler_140GHz.save")
 
 print("Scaler saved!")
 
@@ -237,7 +237,7 @@ torch.save({
     "model_state_dict": model.state_dict(),
     "input_size": X_train.shape[2],
     "window_size": window_size
-}, "lstm_model_220GHz.pth")
+}, "lstm_model_140GHz.pth")
 
 print("Model saved!")
 
