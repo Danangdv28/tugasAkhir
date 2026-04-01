@@ -17,7 +17,7 @@ import joblib
 # ==========================================================
 # 2. LOAD DATASET
 # ==========================================================
-df = pd.read_csv("testtrain/urban_140GHz.csv")  # ganti 220 jika mau
+df = pd.read_csv("urban_140GHz.csv")  # ganti 220 jika mau
 
 # ==========================================================
 # 3. PREPROCESSING

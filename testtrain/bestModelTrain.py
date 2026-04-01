@@ -16,7 +16,7 @@ from torch.utils.data import Dataset, DataLoader
 # ==========================================================
 # 2. LOAD DATASET BARU
 # ==========================================================
-df = pd.read_csv("testtrain/bestModeTesting/urban_140GHz.csv")  # GANTI dengan dataset test kamu
+df = pd.read_csv("bestModeTesting/urban_140GHz.csv")  # GANTI dengan dataset test kamu
 
 # DROP timestamp
 df = df.drop(columns=["timestamp"])
@@ -45,7 +45,7 @@ y = df[target].values
 # ==========================================================
 # 4. LOAD SCALER (PENTING)
 # ==========================================================
-scaler = joblib.load("testtrain/scaler_140GHz.save")
+scaler = joblib.load("scaler_140GHz.save")
 
 X_scaled = scaler.transform(X)  # ❌ JANGAN FIT ULANG
 
@@ -112,7 +112,7 @@ class LSTMModel(nn.Module):
 # ==========================================================
 # 8. LOAD MODEL
 # ==========================================================
-checkpoint = torch.load("testtrain/lstm_model_140GHz.pth")
+checkpoint = torch.load("lstm_model_140GHz.pth")
 
 model = LSTMModel(input_size=checkpoint["input_size"])
 model.load_state_dict(checkpoint["model_state_dict"])
@@ -206,17 +206,35 @@ plt.title("Generalization Test")
 
 plt.show()
 
-# ================================
-# NAIVE BASELINE
-# ================================
-naive_pred = y_seq[:-1]
-true_naive = y_seq[1:]
+# ==========================================================
+# 11.1 BASELINE + COMPARISON
+# ==========================================================
 
-r2_naive = r2_score(true_naive, naive_pred)
+def evaluate_all_models(y_test, y_pred_lstm):
 
-print("\nNAIVE BASELINE")
-print("R2 Naive:", r2_naive)
+    # Mean predictor
+    y_mean = np.full_like(y_test, y_test.mean())
 
-print("\nCOMPARISON")
-print("R2 LSTM :", r2)
-print("R2 Naive:", r2_naive)
+    # Naive predictor (lag-1)
+    y_naive = np.roll(y_test, 1)
+    y_naive[0] = y_naive[1]
+
+    def compute_metrics(y_true, y_pred):
+        mse = mean_squared_error(y_true, y_pred)
+        r2 = r2_score(y_true, y_pred)
+        return mse, r2
+
+    results = {
+        "Mean": compute_metrics(y_test, y_mean),
+        "Naive": compute_metrics(y_test, y_naive),
+        "LSTM": compute_metrics(y_test, y_pred_lstm)
+    }
+
+    return results
+
+
+results = evaluate_all_models(y_seq, predictions)
+
+print("\nMODEL COMPARISON")
+for k, v in results.items():
+    print(f"{k} -> MSE: {v[0]:.4f}, R2: {v[1]:.4f}")
