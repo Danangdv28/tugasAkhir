@@ -139,6 +139,7 @@ class LSTMModel(nn.Module):
 
 model = LSTMModel(X_train.shape[2])
 
+# gambarin
 
 # ==========================================================
 # 9. TRAIN SETUP
@@ -146,6 +147,9 @@ model = LSTMModel(X_train.shape[2])
 
 criterion = nn.HuberLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
+# sgd adam adamW
+# LR = 0,01, 0.001, 0.0001
 
 epochs = 50
 
